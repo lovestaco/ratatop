@@ -14,6 +14,9 @@ const HISTORY: usize = 512;
 
 /// btop's default `update_ms`.
 pub const DEFAULT_INTERVAL: Duration = Duration::from_millis(2000);
+/// btop's `update_ms` bounds.
+const MIN_INTERVAL: Duration = Duration::from_millis(100);
+const MAX_INTERVAL: Duration = Duration::from_millis(10_000);
 
 pub struct App {
     pub info: CpuInfo,
@@ -88,6 +91,21 @@ impl App {
         self.battery = self.battery_path.as_deref().and_then(battery::read);
     }
 
+    /// Step the sample interval, the way btop's `+`/`-` keys do.
+    ///
+    /// Steps by a proportion rather than a fixed amount so the control feels the
+    /// same at 100 ms as at 10 s.
+    pub fn adjust_interval(&mut self, faster: bool) {
+        let millis = self.interval.as_millis() as u64;
+        let step = (millis / 4).max(100);
+        let next = if faster {
+            millis.saturating_sub(step)
+        } else {
+            millis.saturating_add(step)
+        };
+        self.interval = Duration::from_millis(next).clamp(MIN_INTERVAL, MAX_INTERVAL);
+    }
+
     /// The newest aggregate reading.
     pub fn total_percent(&self) -> f64 {
         self.total_history.last().copied().unwrap_or(0.0)
@@ -153,6 +171,23 @@ mod tests {
         }
         app.tick();
         assert_eq!(app.total_history.len(), 2);
+    }
+
+    #[test]
+    fn interval_steps_proportionally_and_stays_in_bounds() {
+        let mut app = App::new();
+        app.adjust_interval(true);
+        assert_eq!(app.interval, Duration::from_millis(1500), "2000 - 2000/4");
+
+        for _ in 0..50 {
+            app.adjust_interval(true);
+        }
+        assert_eq!(app.interval, MIN_INTERVAL, "clamped, not underflowed");
+
+        for _ in 0..100 {
+            app.adjust_interval(false);
+        }
+        assert_eq!(app.interval, MAX_INTERVAL, "clamped, not overflowed");
     }
 
     #[test]

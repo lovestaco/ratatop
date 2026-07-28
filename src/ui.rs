@@ -9,7 +9,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Widget};
 
 use crate::app::App;
 use crate::theme;
@@ -47,9 +47,12 @@ pub fn render_background(area: Rect, buf: &mut Buffer) {
 pub fn render(app: &App, area: Rect, buf: &mut Buffer) {
     let block = Block::default()
         .borders(Borders::ALL)
+        // btop's boxes have rounded corners; ratatui has the glyph set built in.
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme::DIV_LINE))
         .title(top_left_title(app))
         .title(frequency_title(app).alignment(Alignment::Right))
+        .title_bottom(hint_title())
         .title_bottom(interval_title(app).alignment(Alignment::Right));
 
     let inner = block.inner(area);
@@ -269,6 +272,16 @@ fn frequency_title(app: &App) -> Line<'static> {
         )),
         None => Line::default(),
     }
+}
+
+/// Key hints, dim on the bottom border so they stay out of the way.
+fn hint_title() -> Line<'static> {
+    Line::from(vec![
+        Span::styled(" q ", Style::default().fg(theme::HI_FG)),
+        Span::styled("quit ", Style::default().fg(theme::DIV_LINE)),
+        Span::styled(" +/- ", Style::default().fg(theme::HI_FG)),
+        Span::styled("rate ", Style::default().fg(theme::DIV_LINE)),
+    ])
 }
 
 fn interval_title(app: &App) -> Line<'static> {

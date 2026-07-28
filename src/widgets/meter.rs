@@ -13,6 +13,13 @@ const EMPTY_SEGMENT: &str = "▱";
 /// Solid glyphs — btop's wide CPU bar, which reads as one continuous block.
 const SOLID: &str = "█";
 
+/// Left-aligned eighth blocks, 1/8 through 7/8 of a cell.
+///
+/// A whole-cell bar quantizes hard: on a 30-cell meter every step is 3.3%, so a
+/// busy CPU visibly stair-steps. These give the leading edge eight times the
+/// resolution for free.
+const PARTIAL: [&str; 7] = ["▏", "▎", "▍", "▌", "▋", "▊", "▉"];
+
 /// A fixed-width bar whose filled segments follow a gradient across its length.
 pub struct Meter {
     percent: f64,
@@ -50,8 +57,23 @@ impl Widget for Meter {
             return;
         }
         let width = area.width as usize;
-        let filled = ((self.percent.clamp(0.0, 100.0) / 100.0) * width as f64).round() as usize;
+        let exact = (self.percent.clamp(0.0, 100.0) / 100.0) * width as f64;
         let (fill_symbol, empty_symbol) = self.symbols();
+
+        // Whole cells, then the fraction of the next one. Segmented meters round
+        // instead: a half-lit `▰` is not a glyph that exists.
+        let (filled, partial) = if self.solid {
+            let whole = exact.floor() as usize;
+            let eighths = ((exact - exact.floor()) * 8.0).round() as usize;
+            // Eight eighths is just the next whole cell.
+            if eighths >= 8 {
+                (whole + 1, 0)
+            } else {
+                (whole, eighths)
+            }
+        } else {
+            (exact.round() as usize, 0)
+        };
 
         for x in 0..width {
             // Each segment is colored by its own position along the bar, so the
@@ -64,6 +86,11 @@ impl Widget for Meter {
             let (symbol, style) = if x < filled {
                 (
                     fill_symbol,
+                    Style::default().fg(self.gradient.sample(position)),
+                )
+            } else if x == filled && partial > 0 {
+                (
+                    PARTIAL[partial - 1],
                     Style::default().fg(self.gradient.sample(position)),
                 )
             } else {
@@ -134,6 +161,45 @@ mod tests {
             .filter(|&x| buf[(x, 0)].fg != theme::INACTIVE_FG)
             .collect();
         assert_eq!(filled, vec![0, 1, 2], "30% of ten cells");
+    }
+
+    fn solid(percent: f64, width: u16) -> Buffer {
+        let area = Rect::new(0, 0, width, 1);
+        let mut buf = Buffer::empty(area);
+        Meter::new(percent, theme::CPU)
+            .solid()
+            .render(area, &mut buf);
+        buf
+    }
+
+    #[test]
+    fn solid_style_resolves_below_a_whole_cell() {
+        // 62.5% of 4 cells is 2.5 — the third cell is a half block.
+        assert_eq!(symbols(&solid(62.5, 4)), "██▌█");
+        // 3% is 0.12 of a cell: an eighth, visible long before a whole cell
+        // would light up.
+        assert_eq!(symbols(&solid(3.0, 4)), "▏███");
+        // 50% is exactly two cells, so no partial glyph appears at all.
+        assert_eq!(symbols(&solid(50.0, 4)), "████");
+    }
+
+    #[test]
+    fn a_full_eighth_rolls_into_the_next_cell() {
+        // 25% of 4 is exactly 1.0: one whole cell, no stray partial after it.
+        let buf = solid(25.0, 4);
+        assert_eq!(symbols(&buf), "████");
+        assert_eq!(buf[(0, 0)].fg, theme::CPU.sample(0.0), "first cell filled");
+        assert_eq!(buf[(1, 0)].fg, theme::INACTIVE_FG, "second cell empty");
+    }
+
+    #[test]
+    fn segmented_style_has_no_partial_glyphs() {
+        // There is no half-lit `▰`, so the battery meter must still round.
+        let rendered = symbols(&render(62.5, 4));
+        assert!(
+            !rendered.contains('▌'),
+            "segmented meter should not use eighths: {rendered:?}"
+        );
     }
 
     #[test]
