@@ -9,8 +9,22 @@ manager — but written as a modern Rust TUI.
 
 ## Status
 
-Not started. This directory currently holds the upstream references used to guide
-the port:
+**The CPU box works.** It samples real data and renders btop's layout:
+
+```
+┌BAT⚡100% ▰▰▰▰▰▰▰▰▰▰──────────────────────────────2000ms┐
+│                   AMD Ryzen 5 3550H            1.4 GHz│
+│CPU          ⣀⣀⣀⢀⣀⡀⢀⣀⢀⢀⡀⡀⣀⣀⢀⣀⣀⣀⣀⢀⡀⣀⣀⡀⢀⣀⣀⣀⢀⢀    4%  75°C│
+│C0             ⢀⢠ ⡄⢀⡄⡀  ⡀   ⣀⣀     ⢀⡀   ⡀            0%│
+│C1            ⢀   ⡀⢀  ⢀⡀   ⡀⡀ ⢀ ⢀ ⢀⡀  ⢀ ⢀            0%│
+│…                                                      │
+│Load AVG:   0.41   0.93   1.28                         │
+└───────────────────────────────────────────────────────┘
+```
+
+Everything else — the memory, network, and process boxes — is still to come.
+
+This directory also holds the upstream references used to guide the port:
 
 | Path       | What it is                                | Upstream                                  |
 | ---------- | ----------------------------------------- | ----------------------------------------- |
@@ -25,10 +39,10 @@ ratatui will be pulled in from crates.io when the app crate is created.
 
 **v1 — the four boxes**
 
-- CPU box: per-core load, frequency, temperature, and a scrolling history graph
-- Memory box: RAM/swap gauges plus disk usage and I/O per mount
-- Network box: up/down graphs with auto-scaling units and per-interface totals
-- Process box: PID, program, command, threads, user, MEM%, CPU%, sortable
+- [x] CPU box: per-core load, frequency, temperature, load averages, battery
+- [ ] Memory box: RAM/swap gauges plus disk usage and I/O per mount
+- [ ] Network box: up/down graphs with auto-scaling units and per-interface totals
+- [ ] Process box: PID, program, command, threads, user, MEM%, CPU%, sortable
 
 **v2 — interaction**
 
@@ -60,17 +74,20 @@ ratatui will be pulled in from crates.io when the app crate is created.
   reflows the rest, so the layout should be computed from an enabled-box set
   rather than hardcoded constraints.
 
-## Layout (planned)
+## Layout
 
 ```
 ratatop/
 ├── src/
-│   ├── main.rs          # terminal setup, event loop
-│   ├── app.rs           # application state, input handling
+│   ├── main.rs          # terminal setup, event loop, box placement
+│   ├── app.rs           # state and per-tick history
 │   ├── collect/         # /proc + /sys readers, delta tracking
-│   ├── model/           # Cpu, Mem, Net, Process types
-│   ├── theme/           # theme parsing, gradients
-│   └── ui/              # cpu/mem/net/proc boxes, graph widget, menu
+│   │   ├── cpu.rs       # /proc/stat, cpufreq, hwmon, loadavg
+│   │   └── battery.rs   # /sys/class/power_supply
+│   ├── theme.rs         # btop's default colors and gradients
+│   ├── widgets/         # braille graph, gradient meter
+│   └── ui.rs            # the CPU box
+├── examples/snapshot.rs # render one frame as plain text
 ├── btop/                # reference only
 ├── htop/                # reference only
 └── ratatui/             # reference only
@@ -78,11 +95,19 @@ ratatop/
 
 ## Getting started
 
-Nothing to run yet. Once the crate exists:
-
 ```sh
-cargo run --release
+make run        # launch it (q or Esc quits)
+make test       # 46 tests
+make ci         # fmt-check + clippy -D warnings + test
+make snapshot   # print one frame as text, no terminal needed
+make help       # every target
 ```
+
+`make snapshot` is the quickest way to check layout changes — it dumps the
+rendered buffer to stdout, so it works over a pipe and in CI.
+
+Run a single test with `make test-one T=<name>`; `T` also accepts a module path,
+so `make test-one T=widgets::braille` runs that whole module.
 
 ## Why
 

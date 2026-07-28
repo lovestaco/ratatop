@@ -1,0 +1,14 @@
+[package]
+name = "ratatop"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+description = "A btop-style resource monitor built on ratatui"
+license = "Apache-2.0"
+
+[dependencies]
+ratatui = "0.30"
+
+[profile.release]
+lto = true
+strip = true
