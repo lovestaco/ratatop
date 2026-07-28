@@ -3,7 +3,7 @@
 /btop/
 /ratatui/
 /.claude/
-
+*blogs*
 # Rust
 /target/
 **/*.rs.bk
