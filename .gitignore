@@ -1,0 +1,16 @@
+# Reference clones, not part of this project
+/htop/
+/btop/
+/ratatui/
+/.claude/
+
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
