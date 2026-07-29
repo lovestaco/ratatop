@@ -31,19 +31,6 @@ const MIN_CORE_COLUMN_WIDTH: u16 = 22;
 /// Blank cells between core columns.
 const CORE_COLUMN_GAP: u16 = 2;
 
-/// Paint the whole terminal, not just the box.
-///
-/// btop owns the full screen rather than inheriting the terminal's colors.
-///
-/// Call this *after* the widgets, not before: it sets `bg` only, so the colors
-/// they chose survive, and anything they blanked gets picked up. Running it
-/// first leaves holes — laying down a double-width glyph like `⚡` resets the
-/// continuation cell behind it, which would otherwise keep the terminal's own
-/// background.
-pub fn render_background(area: Rect, buf: &mut Buffer) {
-    buf.set_style(area, Style::default().bg(theme::MAIN_BG));
-}
-
 pub fn render(app: &App, area: Rect, buf: &mut Buffer) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -330,7 +317,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         render(app, area, &mut buf);
         render_battery_meter(app, area, &mut buf);
-        render_background(area, &mut buf);
+        super::super::render_background(area, &mut buf);
         buf
     }
 
@@ -469,7 +456,7 @@ mod tests {
     fn background_reaches_past_the_box() {
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        render_background(area, &mut buf);
+        super::super::render_background(area, &mut buf);
         assert_eq!(buf[(39, 9)].bg, theme::MAIN_BG, "far corner unpainted");
     }
 

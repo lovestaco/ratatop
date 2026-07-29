@@ -4,7 +4,6 @@ use std::io;
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers};
-use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::{DefaultTerminal, Frame};
 
 use ratatop::app::App;
@@ -62,32 +61,9 @@ fn handle_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// The boxes get the whole terminal; `ui::render` decides how they share it.
 fn draw(app: &App, frame: &mut Frame) {
-    let area = cpu_box_area(app, frame.area());
-    ui::render(app, area, frame.buffer_mut());
-    ui::render_battery_meter(app, area, frame.buffer_mut());
-    // Last, over the full frame: see `ui::render_background`.
-    ui::render_background(frame.area(), frame.buffer_mut());
-}
-
-/// Span the terminal's width, take only the height the content needs, and sit at
-/// the top.
-///
-/// btop's CPU box spans the screen, and a wider box means a longer history in
-/// the graphs — so width is worth taking, height is not. The leftover height
-/// goes below the box, where the memory, network, and process boxes will land.
-fn cpu_box_area(app: &App, area: Rect) -> Rect {
-    let (preferred_width, preferred_height) = ui::preferred_size(app);
-    let height = preferred_height.min(area.height);
-    let width = area.width.max(preferred_width).min(area.width);
-
-    let [horizontal] = Layout::horizontal([Constraint::Length(width)])
-        .flex(Flex::Center)
-        .areas(area);
-    let [top] = Layout::vertical([Constraint::Length(height)])
-        .flex(Flex::Start)
-        .areas(horizontal);
-    top
+    ui::render(app, frame.area(), frame.buffer_mut());
 }
 
 #[cfg(test)]
@@ -148,31 +124,5 @@ mod tests {
         press(&mut app, KeyCode::F(5));
         assert!(!app.should_quit);
         assert_eq!(app.interval, before);
-    }
-
-    #[test]
-    fn box_spans_the_width_but_only_the_height_it_needs() {
-        let app = App::new();
-        let frame = Rect::new(0, 0, 200, 60);
-        let area = cpu_box_area(&app, frame);
-        assert_eq!(area.width, frame.width, "width is worth taking");
-        assert_eq!(area.height, ui::preferred_size(&app).1, "height is not");
-    }
-
-    #[test]
-    fn box_sits_at_the_top_of_the_terminal() {
-        let app = App::new();
-        for height in [10, 30, 60] {
-            let frame = Rect::new(0, 0, 120, height);
-            assert_eq!(cpu_box_area(&app, frame).y, 0, "no gap above the box");
-        }
-    }
-
-    #[test]
-    fn box_never_exceeds_a_small_terminal() {
-        let app = App::new();
-        let frame = Rect::new(0, 0, 20, 6);
-        let area = cpu_box_area(&app, frame);
-        assert!(area.height <= frame.height && area.width <= frame.width);
     }
 }

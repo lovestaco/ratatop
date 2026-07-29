@@ -1,4 +1,4 @@
-//! Render the CPU box once and print it as plain text.
+//! Render the boxes once and print them as plain text.
 //!
 //! Useful for checking layout without a terminal — `make snapshot`.
 
@@ -25,11 +25,11 @@ fn main() {
         app.tick();
     }
 
-    let (width, height) = ui::preferred_size(&app);
-    let area = Rect::new(0, 0, width, height);
+    let (width, cpu_height) = ui::cpu::preferred_size(&app);
+    let (_, mem_height) = ui::mem::preferred_size();
+    let area = Rect::new(0, 0, width, cpu_height + mem_height);
     let mut buf = Buffer::empty(area);
     ui::render(&app, area, &mut buf);
-    ui::render_battery_meter(&app, area, &mut buf);
 
     for row in buf.content().chunks(area.width as usize) {
         let line: String = row.iter().map(ratatui::buffer::Cell::symbol).collect();
