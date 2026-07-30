@@ -1,6 +1,7 @@
 //! The boxes, and how they share the terminal.
 
 pub mod cpu;
+pub mod disk;
 pub mod mem;
 
 use ratatui::buffer::Buffer;
@@ -40,15 +41,23 @@ pub fn render(app: &App, area: Rect, buf: &mut Buffer) {
     cpu::render(app, cpu_area, buf);
     cpu::render_battery_meter(app, cpu_area, buf);
 
-    let [mem_area, _] = Layout::horizontal([
+    let (disk_width, disk_height) = disk::preferred_size(app.disks.all().len());
+
+    // Memory and disks share the row under the CPU box, side by side.
+    let [mem_column, disk_column, _] = Layout::horizontal([
         Constraint::Length(mem_width.min(rest.width)),
+        Constraint::Length(disk_width),
         Constraint::Min(0),
     ])
     .areas(rest);
-    let [mem_area] =
-        Layout::vertical([Constraint::Length(mem_height.min(mem_area.height))]).areas(mem_area);
 
+    let [mem_area] =
+        Layout::vertical([Constraint::Length(mem_height.min(mem_column.height))]).areas(mem_column);
     mem::render(app, mem_area, buf);
+
+    let [disk_area] = Layout::vertical([Constraint::Length(disk_height.min(disk_column.height))])
+        .areas(disk_column);
+    disk::render(app, disk_area, buf);
 
     render_background(area, buf);
 }

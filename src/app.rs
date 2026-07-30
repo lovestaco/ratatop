@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use crate::collect::battery::{self, Battery};
 use crate::collect::cpu::{self, CpuInfo, Sample};
+use crate::collect::disk::Disks;
 use crate::collect::mem::{self, Memory};
 
 /// How many samples to retain per graph.
@@ -32,6 +33,7 @@ pub struct App {
     pub temperature: Option<f64>,
     pub load_average: [f64; 3],
     pub memory: Memory,
+    pub disks: Disks,
     pub battery: Option<Battery>,
     battery_path: Option<PathBuf>,
     previous: Sample,
@@ -57,6 +59,7 @@ impl App {
             temperature: None,
             load_average: [0.0; 3],
             memory: mem::sample(),
+            disks: Disks::new(),
             battery: battery_path.as_deref().and_then(battery::read),
             battery_path,
             previous,
@@ -92,6 +95,7 @@ impl App {
         }
         self.load_average = cpu::load_average();
         self.memory = mem::sample();
+        self.disks.tick();
         self.battery = self.battery_path.as_deref().and_then(battery::read);
     }
 

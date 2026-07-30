@@ -15,6 +15,8 @@ pub struct Memory {
     pub available: u64,
     pub cached: u64,
     pub free: u64,
+    pub swap_total: u64,
+    pub swap_used: u64,
 }
 
 impl Memory {
@@ -31,7 +33,7 @@ pub fn sample() -> Memory {
     sample_in(Path::new("/"))
 }
 
-fn sample_in(root: &Path) -> Memory {
+pub(super) fn sample_in(root: &Path) -> Memory {
     let raw = fs::read_to_string(root.join("proc/meminfo")).unwrap_or_default();
     parse(&raw)
 }
@@ -39,6 +41,7 @@ fn sample_in(root: &Path) -> Memory {
 fn parse(raw: &str) -> Memory {
     let mut mem = Memory::default();
     let mut available = None;
+    let mut swap_free = 0;
 
     for line in raw.lines() {
         let Some((label, rest)) = line.split_once(':') else {
@@ -59,9 +62,12 @@ fn parse(raw: &str) -> Memory {
             "MemFree" => mem.free = bytes,
             "MemAvailable" => available = Some(bytes),
             "Cached" => mem.cached = bytes,
+            "SwapTotal" => mem.swap_total = bytes,
+            "SwapFree" => swap_free = bytes,
             _ => {}
         }
     }
+    mem.swap_used = mem.swap_total.saturating_sub(swap_free);
 
     // Kernels before 3.14 have no MemAvailable; btop estimates it the same way.
     mem.available = available.unwrap_or(mem.free + mem.cached);

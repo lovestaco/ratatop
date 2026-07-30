@@ -167,6 +167,7 @@ mod tests {
             used: total - available,
             cached: 5_146_132 * 1024,
             free: 497_404 * 1024,
+            ..Memory::default()
         }
     }
 
