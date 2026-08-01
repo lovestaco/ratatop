@@ -7,6 +7,7 @@ use crate::collect::battery::{self, Battery};
 use crate::collect::cpu::{self, CpuInfo, Sample};
 use crate::collect::disk::Disks;
 use crate::collect::mem::{self, Memory};
+use crate::collect::net::Net;
 
 /// How many samples to retain per graph.
 ///
@@ -34,6 +35,7 @@ pub struct App {
     pub load_average: [f64; 3],
     pub memory: Memory,
     pub disks: Disks,
+    pub net: Net,
     pub battery: Option<Battery>,
     battery_path: Option<PathBuf>,
     previous: Sample,
@@ -60,6 +62,7 @@ impl App {
             load_average: [0.0; 3],
             memory: mem::sample(),
             disks: Disks::new(),
+            net: Net::new(),
             battery: battery_path.as_deref().and_then(battery::read),
             battery_path,
             previous,
@@ -96,6 +99,7 @@ impl App {
         self.load_average = cpu::load_average();
         self.memory = mem::sample();
         self.disks.tick();
+        self.net.tick();
         self.battery = self.battery_path.as_deref().and_then(battery::read);
     }
 

@@ -29,8 +29,10 @@ fn main() {
     let (mem_width, mem_height) = ui::mem::preferred_size();
     let (disk_width, disk_height) = ui::disk::preferred_size(app.disks.all().len());
     // Wide enough for the memory and disks boxes side by side under the CPU box.
-    let width = cpu_width.max(mem_width + disk_width);
-    let area = Rect::new(0, 0, width, cpu_height + mem_height.max(disk_height));
+    let (net_width, net_height) = ui::net::preferred_size();
+    let width = cpu_width.max(mem_width + disk_width + net_width);
+    let below = mem_height.max(disk_height).max(net_height);
+    let area = Rect::new(0, 0, width, cpu_height + below);
     let mut buf = Buffer::empty(area);
     ui::render(&app, area, &mut buf);
 

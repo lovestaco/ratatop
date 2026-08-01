@@ -3,6 +3,7 @@
 pub mod cpu;
 pub mod disk;
 pub mod mem;
+pub mod net;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -43,8 +44,10 @@ pub fn render(app: &App, area: Rect, buf: &mut Buffer) {
 
     let (disk_width, disk_height) = disk::preferred_size(app.disks.all().len());
 
-    // Memory and disks share the row under the CPU box, side by side.
-    let [mem_column, disk_column, _] = Layout::horizontal([
+    let (net_width, net_height) = net::preferred_size();
+
+    // Memory, disks and network share the row under the CPU box, side by side.
+    let [mem_column, disk_column, net_column] = Layout::horizontal([
         Constraint::Length(mem_width.min(rest.width)),
         Constraint::Length(disk_width),
         Constraint::Min(0),
@@ -58,6 +61,13 @@ pub fn render(app: &App, area: Rect, buf: &mut Buffer) {
     let [disk_area] = Layout::vertical([Constraint::Length(disk_height.min(disk_column.height))])
         .areas(disk_column);
     disk::render(app, disk_area, buf);
+
+    // The network box takes the leftover width, so it grows with the terminal.
+    let [net_area] =
+        Layout::vertical([Constraint::Length(net_height.min(net_column.height))]).areas(net_column);
+    if net_area.width >= net_width / 2 {
+        net::render(app, net_area, buf);
+    }
 
     render_background(area, buf);
 }

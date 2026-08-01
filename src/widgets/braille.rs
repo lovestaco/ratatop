@@ -29,11 +29,26 @@ pub struct BrailleGraph<'a> {
     /// Percentages, oldest first. Only the newest samples that fit are drawn.
     data: &'a [f64],
     gradient: Gradient,
+    /// Fill downward from the top instead of upward from the bottom.
+    inverted: bool,
 }
 
 impl<'a> BrailleGraph<'a> {
     pub fn new(data: &'a [f64], gradient: Gradient) -> Self {
-        Self { data, gradient }
+        Self {
+            data,
+            gradient,
+            inverted: false,
+        }
+    }
+
+    /// Hang the graph from the top edge, growing downward.
+    ///
+    /// btop mirrors the upload graph against the download one so the pair reads
+    /// as a single figure with traffic flowing out from the middle.
+    pub fn inverted(mut self) -> Self {
+        self.inverted = true;
+        self
     }
 
     /// How many samples an area of this width can show.
@@ -72,10 +87,15 @@ impl Widget for BrailleGraph<'_> {
             let style = Style::default().fg(self.gradient.sample(value / 100.0));
 
             for dot in 0..filled.min(dot_rows) {
-                // Dots stack upward from the bottom of the whole graph.
-                let from_bottom = dot_rows - 1 - dot;
-                let cell_y = area.y + (from_bottom / 4) as u16;
-                let dot_row = from_bottom % 4;
+                // Dots stack from the graph's baseline: the bottom edge normally,
+                // the top edge when inverted.
+                let offset = if self.inverted {
+                    dot
+                } else {
+                    dot_rows - 1 - dot
+                };
+                let cell_y = area.y + (offset / 4) as u16;
+                let dot_row = offset % 4;
 
                 let cell = &mut buf[(cell_x, cell_y)];
                 let existing = cell
@@ -180,6 +200,36 @@ mod tests {
         assert_eq!(light[(0, 0)].fg, theme::CPU.sample(0.30));
         assert_eq!(busy[(0, 0)].fg, theme::CPU.sample(1.0));
         assert_ne!(light[(0, 0)].fg, busy[(0, 0)].fg);
+    }
+
+    #[test]
+    fn inverted_graphs_hang_from_the_top() {
+        let area = Rect::new(0, 0, 1, 2);
+        let mut buf = Buffer::empty(area);
+        BrailleGraph::new(&[50.0, 50.0], theme::CPU)
+            .inverted()
+            .render(area, &mut buf);
+        let cells = symbols(&buf);
+        assert_eq!(cells.chars().next(), Some('\u{28ff}'), "top cell full");
+        assert_eq!(cells.chars().nth(1), Some(' '), "bottom cell empty");
+    }
+
+    #[test]
+    fn inverting_mirrors_the_normal_graph() {
+        let normal = symbols(&render(&[25.0, 25.0], 1, 2));
+        let area = Rect::new(0, 0, 1, 2);
+        let mut buf = Buffer::empty(area);
+        BrailleGraph::new(&[25.0, 25.0], theme::CPU)
+            .inverted()
+            .render(area, &mut buf);
+        let flipped: String = symbols(&buf).chars().rev().collect();
+        assert_eq!(normal.chars().filter(|c| *c != ' ').count(), 1);
+        assert_eq!(
+            flipped.chars().filter(|c| *c != ' ').count(),
+            1,
+            "same ink, opposite end: {normal:?} vs {:?}",
+            symbols(&buf)
+        );
     }
 
     #[test]

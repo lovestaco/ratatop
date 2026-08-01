@@ -57,6 +57,9 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         // holding a key down cannot starve sampling.
         KeyCode::Char('+' | '=') => app.adjust_interval(true),
         KeyCode::Char('-' | '_') => app.adjust_interval(false),
+        // btop cycles network interfaces with b and n.
+        KeyCode::Char('n') => app.net.cycle(true),
+        KeyCode::Char('b') => app.net.cycle(false),
         _ => {}
     }
 }
