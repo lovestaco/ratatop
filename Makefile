@@ -5,11 +5,9 @@ CARGO ?= cargo
 all: build
 
 ## build: debug build
-build:
 	$(CARGO) build
 
 ## release: optimized build
-release:
 	$(CARGO) build --release
 
 ## run: build and launch ratatop (press q to quit)

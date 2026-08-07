@@ -8,6 +8,7 @@ use crate::collect::cpu::{self, CpuInfo, Sample};
 use crate::collect::disk::Disks;
 use crate::collect::mem::{self, Memory};
 use crate::collect::net::Net;
+use crate::collect::proc::Processes;
 
 /// How many samples to retain per graph.
 ///
@@ -36,6 +37,7 @@ pub struct App {
     pub memory: Memory,
     pub disks: Disks,
     pub net: Net,
+    pub processes: Processes,
     pub battery: Option<Battery>,
     battery_path: Option<PathBuf>,
     previous: Sample,
@@ -63,6 +65,7 @@ impl App {
             memory: mem::sample(),
             disks: Disks::new(),
             net: Net::new(),
+            processes: Processes::new(),
             battery: battery_path.as_deref().and_then(battery::read),
             battery_path,
             previous,
@@ -100,6 +103,7 @@ impl App {
         self.memory = mem::sample();
         self.disks.tick();
         self.net.tick();
+        self.processes.tick();
         self.battery = self.battery_path.as_deref().and_then(battery::read);
     }
 

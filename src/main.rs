@@ -60,6 +60,16 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         // btop cycles network interfaces with b and n.
         KeyCode::Char('n') => app.net.cycle(true),
         KeyCode::Char('b') => app.net.cycle(false),
+        // Process table navigation.
+        KeyCode::Up => app.processes.move_selection(-1),
+        KeyCode::Down => app.processes.move_selection(1),
+        KeyCode::PageUp => app.processes.move_selection(-10),
+        KeyCode::PageDown => app.processes.move_selection(10),
+        KeyCode::Home => app.processes.select_first(),
+        KeyCode::End => app.processes.select_last(),
+        KeyCode::Right => app.processes.cycle_sort(true),
+        KeyCode::Left => app.processes.cycle_sort(false),
+        KeyCode::Char('r') => app.processes.toggle_reverse(),
         _ => {}
     }
 }

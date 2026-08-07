@@ -4,6 +4,7 @@ pub mod cpu;
 pub mod disk;
 pub mod mem;
 pub mod net;
+pub mod proc;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -33,11 +34,18 @@ pub fn render(app: &App, area: Rect, buf: &mut Buffer) {
     let (_, cpu_height) = cpu::preferred_size(app);
     let (mem_width, mem_height) = mem::preferred_size();
 
-    let [cpu_area, rest] = Layout::vertical([
+    // The middle row is as tall as its tallest box, or the shorter ones clip.
+    let mid_height = mem::preferred_size()
+        .1
+        .max(disk::preferred_size(app.disks.all().len()).1)
+        .max(net::preferred_size().1);
+    let [cpu_area, middle, proc_area] = Layout::vertical([
         Constraint::Length(cpu_height.min(area.height)),
+        Constraint::Length(mid_height),
         Constraint::Min(0),
     ])
     .areas(area);
+    let rest = middle;
 
     cpu::render(app, cpu_area, buf);
     cpu::render_battery_meter(app, cpu_area, buf);
@@ -67,6 +75,11 @@ pub fn render(app: &App, area: Rect, buf: &mut Buffer) {
         Layout::vertical([Constraint::Length(net_height.min(net_column.height))]).areas(net_column);
     if net_area.width >= net_width / 2 {
         net::render(app, net_area, buf);
+    }
+
+    // The process box takes every row the other boxes did not want.
+    if proc_area.height > 3 {
+        proc::render(app, proc_area, buf);
     }
 
     render_background(area, buf);

@@ -70,6 +70,8 @@ pub const TITLE: Color = Color::Rgb(0xee, 0xee, 0xee);
 pub const HI_FG: Color = Color::Rgb(0xb5, 0x40, 0x40);
 /// `div_line` — box borders.
 pub const DIV_LINE: Color = Color::Rgb(0x30, 0x30, 0x30);
+/// `selected_bg` — the highlighted row in the process table.
+pub const SELECTED_BG: Color = Color::Rgb(0x2a, 0x2a, 0x3a);
 /// `inactive_fg` — the unfilled portion of a meter.
 pub const INACTIVE_FG: Color = Color::Rgb(0x40, 0x40, 0x40);
 

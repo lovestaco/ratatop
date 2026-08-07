@@ -174,8 +174,8 @@ fn update(direction: &mut Direction, rate: Option<f64>) {
 fn parse_dev(raw: &str) -> Vec<(String, Counters)> {
     raw.lines()
         .filter_map(|line| {
-            // The first two lines are headers; only data lines have a colon
-            // separating the name from its counters.
+            // Only data lines carry a colon separating the interface name from
+            // its counters, so this alone drops the two header lines.
             let (name, rest) = line.split_once(':')?;
             let fields: Vec<u64> = rest
                 .split_whitespace()
@@ -290,10 +290,10 @@ Inter-|   Receive                                                |  Transmit
 
     #[test]
     fn header_lines_are_skipped() {
-        // The header's second line contains a colon inside "Inter-|face |bytes",
-        // so splitting on the colon alone is not enough.
+        // Neither header line contains a colon, which is what excludes them.
         let parsed = parse_dev(DEV);
         assert!(parsed.iter().all(|(name, _)| !name.contains("face")));
+        assert!(parsed.iter().all(|(name, _)| !name.contains("Inter")));
     }
 
     #[test]

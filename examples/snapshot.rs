@@ -32,7 +32,8 @@ fn main() {
     let (net_width, net_height) = ui::net::preferred_size();
     let width = cpu_width.max(mem_width + disk_width + net_width);
     let below = mem_height.max(disk_height).max(net_height);
-    let area = Rect::new(0, 0, width, cpu_height + below);
+    // Room for the process box under everything else.
+    let area = Rect::new(0, 0, width, cpu_height + below + 14);
     let mut buf = Buffer::empty(area);
     ui::render(&app, area, &mut buf);
 
