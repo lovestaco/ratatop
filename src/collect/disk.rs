@@ -7,8 +7,11 @@
 
 use std::collections::HashMap;
 use std::ffi::CString;
+#[cfg(target_os = "linux")]
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// A sector is 512 bytes in `/sys/block/*/stat`, regardless of the real block
@@ -53,6 +56,8 @@ impl Disk {
 }
 
 /// Raw counters for one device, used to turn monotonic totals into rates.
+// macOS does not read per-device counters yet, so nothing constructs this there.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct IoCounters {
     sectors_read: u64,
@@ -163,6 +168,7 @@ struct Mount {
 }
 
 /// Physical mounts only, in the order the kernel lists them.
+#[cfg(target_os = "linux")]
 fn read_mounts(root: &Path) -> Vec<Mount> {
     let virtual_fs = virtual_filesystems(root);
     let raw = fs::read_to_string(root.join("proc/self/mounts")).unwrap_or_default();
@@ -195,10 +201,51 @@ fn read_mounts(root: &Path) -> Vec<Mount> {
     mounts
 }
 
+/// Mounts from `getmntinfo(3)`, keeping only ones backed by a `/dev` node.
+///
+/// APFS volumes under `/System/Volumes` all report the same container's space,
+/// so only `/` stands in for them; listing each would repeat one number.
+#[cfg(target_os = "macos")]
+fn read_mounts(_root: &Path) -> Vec<Mount> {
+    use std::ffi::CStr;
+
+    let mut table: *mut libc::statfs = std::ptr::null_mut();
+    // SAFETY: getmntinfo points `table` at a static libc buffer it owns, and
+    // returns the number of entries in it (0 or negative on failure).
+    let count = unsafe { libc::getmntinfo(&mut table, libc::MNT_NOWAIT) };
+    if count <= 0 || table.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: the table holds `count` valid statfs entries, as just reported.
+    let entries = unsafe { std::slice::from_raw_parts(table, count as usize) };
+
+    let mut seen: Vec<String> = Vec::new();
+    let mut mounts = Vec::new();
+    for entry in entries {
+        // SAFETY: the kernel NUL-terminates both name fields.
+        let device = unsafe { CStr::from_ptr(entry.f_mntfromname.as_ptr()) }
+            .to_string_lossy()
+            .into_owned();
+        let path = unsafe { CStr::from_ptr(entry.f_mntonname.as_ptr()) }
+            .to_string_lossy()
+            .into_owned();
+        if !device.starts_with("/dev/") || path.starts_with("/System/Volumes/") {
+            continue;
+        }
+        if seen.contains(&device) {
+            continue;
+        }
+        seen.push(device.clone());
+        mounts.push(Mount { device, path });
+    }
+    mounts
+}
+
 /// Filesystem types the kernel marks `nodev`, i.e. not backed by a device.
 ///
 /// Reading this instead of hardcoding a list means new pseudo-filesystems are
 /// excluded automatically.
+#[cfg(target_os = "linux")]
 fn virtual_filesystems(root: &Path) -> Vec<String> {
     let raw = fs::read_to_string(root.join("proc/filesystems")).unwrap_or_default();
     let mut types: Vec<String> = raw
@@ -225,6 +272,7 @@ fn label_for(mount: &str) -> String {
 }
 
 /// Decode the octal escapes the kernel writes for spaces, tabs and backslashes.
+#[cfg(target_os = "linux")]
 fn unescape_mount(path: &str) -> String {
     let bytes = path.as_bytes();
     let mut out = String::with_capacity(path.len());
@@ -294,6 +342,7 @@ fn sort_disks(disks: &mut [Disk]) {
 }
 
 /// Read a device's I/O counters from sysfs.
+#[cfg(target_os = "linux")]
 fn read_io(root: &Path, device: &str) -> Option<IoCounters> {
     let raw = fs::read_to_string(sysfs_stat(root, device)?).ok()?;
     let fields: Vec<u64> = raw
@@ -316,6 +365,7 @@ fn read_io(root: &Path, device: &str) -> Option<IoCounters> {
 ///
 /// Whole disks live at `/sys/block/<dev>/stat`; partitions are nested one level
 /// down, at `/sys/block/<parent>/<dev>/stat`.
+#[cfg(target_os = "linux")]
 fn sysfs_stat(root: &Path, device: &str) -> Option<PathBuf> {
     let name = Path::new(device).file_name()?.to_str()?;
     let block = root.join("sys/block");
@@ -330,6 +380,13 @@ fn sysfs_stat(root: &Path, device: &str) -> Option<PathBuf> {
             return Some(nested);
         }
     }
+    None
+}
+
+/// macOS per-device counters live in IOKit's block-storage statistics, which
+/// are not read yet, so disks report their usage with no I/O rates.
+#[cfg(target_os = "macos")]
+fn read_io(_root: &Path, _device: &str) -> Option<IoCounters> {
     None
 }
 
@@ -378,6 +435,7 @@ mod tests {
         assert_eq!(disk.io_rate(), 2000.0);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn octal_escapes_in_mount_paths_are_decoded() {
         assert_eq!(unescape_mount("/mnt/my\\040disk"), "/mnt/my disk");
@@ -418,6 +476,7 @@ mod tests {
         assert_eq!(history.last(), Some(&((HISTORY + 4) as f64)));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_missing_root_yields_no_disks_rather_than_panicking() {
         let mut disks = Disks::default();
@@ -471,6 +530,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn pseudo_filesystems_are_excluded() {
         let mounts = read_mounts(Path::new("/"));

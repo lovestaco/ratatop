@@ -1,7 +1,10 @@
-//! CPU sampling from `/proc/stat`, `/sys/devices/system/cpu`, and hwmon.
+//! CPU sampling: `/proc/stat`, `/sys/devices/system/cpu`, and hwmon on Linux;
+//! `host_processor_info(3)` and sysctl on macOS.
 //!
-//! Mirrors what `btop/src/linux/btop_collect.cpp` reads, minus the bits the CPU
-//! box does not display.
+//! Linux mirrors what `btop/src/linux/btop_collect.cpp` reads, minus the bits
+//! the CPU box does not display. macOS has no sysfs equivalent, so frequency
+//! and temperature stay blank there: the only public sources are sysctls that
+//! Apple Silicon does not populate, and SMC access is private.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -52,6 +55,7 @@ impl CpuInfo {
         Self::detect_in(Path::new("/"))
     }
 
+    #[cfg(target_os = "linux")]
     fn detect_in(root: &Path) -> Self {
         let cpuinfo = read(&root.join("proc/cpuinfo")).unwrap_or_default();
         let (temp_input, temp_critical) = find_cpu_sensor(&root.join("sys/class/hwmon"));
@@ -60,6 +64,16 @@ impl CpuInfo {
             core_count: parse_core_count(&cpuinfo),
             temp_input,
             temp_critical,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn detect_in(_root: &Path) -> Self {
+        Self {
+            model: macos::model(),
+            core_count: macos::core_count(),
+            temp_input: None,
+            temp_critical: 80.0,
         }
     }
 
@@ -75,8 +89,14 @@ pub fn sample() -> Sample {
     sample_in(Path::new("/"))
 }
 
+#[cfg(target_os = "linux")]
 fn sample_in(root: &Path) -> Sample {
     parse_stat(&read(&root.join("proc/stat")).unwrap_or_default())
+}
+
+#[cfg(target_os = "macos")]
+fn sample_in(_root: &Path) -> Sample {
+    macos::sample()
 }
 
 /// Mean current frequency across cores, in GHz.
@@ -87,6 +107,7 @@ pub fn frequency_ghz() -> Option<f64> {
     frequency_ghz_in(Path::new("/"))
 }
 
+#[cfg(target_os = "linux")]
 fn frequency_ghz_in(root: &Path) -> Option<f64> {
     let cpus = root.join("sys/devices/system/cpu");
     let mut khz = Vec::new();
@@ -111,11 +132,19 @@ fn frequency_ghz_in(root: &Path) -> Option<f64> {
     (!mhz.is_empty()).then(|| mhz.iter().sum::<f64>() / mhz.len() as f64 / 1000.0)
 }
 
+/// Nominal frequency from sysctl. Intel Macs report `hw.cpufrequency`;
+/// Apple Silicon does not, so this is `None` there.
+#[cfg(target_os = "macos")]
+fn frequency_ghz_in(_root: &Path) -> Option<f64> {
+    macos::sysctl_u64(c"hw.cpufrequency").map(|hz| hz as f64 / 1_000_000_000.0)
+}
+
 /// The 1, 5, and 15 minute load averages.
 pub fn load_average() -> [f64; 3] {
     load_average_in(Path::new("/"))
 }
 
+#[cfg(target_os = "linux")]
 fn load_average_in(root: &Path) -> [f64; 3] {
     let Some(raw) = read(&root.join("proc/loadavg")) else {
         return [0.0; 3];
@@ -128,6 +157,19 @@ fn load_average_in(root: &Path) -> [f64; 3] {
     ]
 }
 
+#[cfg(target_os = "macos")]
+fn load_average_in(_root: &Path) -> [f64; 3] {
+    let mut loads = [0.0f64; 3];
+    // SAFETY: getloadavg writes at most `nelem` doubles, and the array holds 3.
+    let written = unsafe { libc::getloadavg(loads.as_mut_ptr(), 3) };
+    if written == 3 {
+        loads
+    } else {
+        [0.0; 3]
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn parse_stat(raw: &str) -> Sample {
     let mut sample = Sample::default();
     for line in raw.lines() {
@@ -151,6 +193,7 @@ fn parse_stat(raw: &str) -> Sample {
         if times.len() < 4 {
             continue;
         }
+
         let total: u64 = times.iter().sum();
         let idle = times[3] + times.get(4).copied().unwrap_or(0);
         let entry = Times {
@@ -167,6 +210,7 @@ fn parse_stat(raw: &str) -> Sample {
     sample
 }
 
+#[cfg(target_os = "linux")]
 fn parse_model(cpuinfo: &str) -> String {
     cpuinfo
         .lines()
@@ -203,6 +247,7 @@ fn shorten_model(raw: &str) -> String {
     name.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+#[cfg(target_os = "linux")]
 fn parse_core_count(cpuinfo: &str) -> usize {
     cpuinfo
         .lines()
@@ -212,6 +257,7 @@ fn parse_core_count(cpuinfo: &str) -> usize {
 }
 
 /// Pick a package sensor, preferring the vendor drivers btop looks for.
+#[cfg(target_os = "linux")]
 fn find_cpu_sensor(hwmon: &Path) -> (Option<PathBuf>, f64) {
     const PREFERRED: [&str; 5] = ["k10temp", "coretemp", "zenpower", "cpu_thermal", "acpitz"];
 
@@ -252,10 +298,138 @@ fn read(path: &Path) -> Option<String> {
     fs::read_to_string(path).ok()
 }
 
+/// Mach and sysctl readers for macOS.
+#[cfg(target_os = "macos")]
+pub(super) mod macos {
+    use std::ffi::{c_void, CStr};
+    use std::mem::size_of;
+    use std::ptr;
+
+    use super::{Sample, Times};
+
+    /// `CPU_STATE_MAX` entries per core: user, system, idle, nice.
+    const STATES: usize = 4;
+    const CPU_STATE_USER: usize = 0;
+    const CPU_STATE_SYSTEM: usize = 1;
+    const CPU_STATE_IDLE: usize = 2;
+    const CPU_STATE_NICE: usize = 3;
+
+    /// Per-core tick counters from `host_processor_info(3)`.
+    pub fn sample() -> Sample {
+        let mut count: libc::natural_t = 0;
+        let mut info: libc::processor_info_array_t = ptr::null_mut();
+        let mut info_count: libc::mach_msg_type_number_t = 0;
+
+        // SAFETY: on success the call writes the core count and a vm-allocated
+        // array of `info_count` integers. That array is read below and then
+        // released with vm_deallocate, exactly once.
+        let status = unsafe {
+            libc::host_processor_info(
+                mach2::mach_init::mach_host_self(),
+                libc::PROCESSOR_CPU_LOAD_INFO,
+                &mut count,
+                &mut info,
+                &mut info_count,
+            )
+        };
+        if status != libc::KERN_SUCCESS || info.is_null() {
+            return Sample::default();
+        }
+
+        let mut sample = Sample::default();
+        // SAFETY: the kernel reports `info_count` valid integers at `info`.
+        let ticks = unsafe { std::slice::from_raw_parts(info, info_count as usize) };
+        let (cores, _) = ticks.as_chunks::<STATES>();
+        for core in cores.iter().take(count as usize) {
+            let user = core[CPU_STATE_USER] as u64;
+            let system = core[CPU_STATE_SYSTEM] as u64;
+            let idle = core[CPU_STATE_IDLE] as u64;
+            let nice = core[CPU_STATE_NICE] as u64;
+            let total = user + system + idle + nice;
+            let entry = Times {
+                total,
+                busy: total - idle,
+            };
+            sample.total.total += entry.total;
+            sample.total.busy += entry.busy;
+            sample.cores.push(entry);
+        }
+
+        // SAFETY: `info` came from host_processor_info and is freed exactly once.
+        unsafe {
+            libc::vm_deallocate(
+                mach2::traps::mach_task_self(),
+                info as libc::vm_address_t,
+                info_count as libc::vm_size_t * size_of::<libc::integer_t>() as libc::vm_size_t,
+            );
+        }
+        sample
+    }
+
+    pub fn core_count() -> usize {
+        // SAFETY: sysconf takes an integer and returns one.
+        let online = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) };
+        usize::try_from(online).unwrap_or(1).max(1)
+    }
+
+    /// The brand string, shortened the way the Linux model names are.
+    pub fn model() -> String {
+        sysctl_string(c"machdep.cpu.brand_string")
+            .map(|raw| super::shorten_model(&raw))
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "Unknown CPU".to_string())
+    }
+
+    pub fn sysctl_u64(name: &CStr) -> Option<u64> {
+        let mut value: u64 = 0;
+        let mut len = size_of::<u64>();
+        // SAFETY: `value` and `len` are sized for a 64-bit sysctl, and the name is
+        // NUL-terminated.
+        let status = unsafe {
+            libc::sysctlbyname(
+                name.as_ptr(),
+                (&mut value as *mut u64).cast::<c_void>(),
+                &mut len,
+                ptr::null_mut(),
+                0,
+            )
+        };
+        (status == 0 && len == size_of::<u64>()).then_some(value)
+    }
+
+    fn sysctl_string(name: &CStr) -> Option<String> {
+        let mut len = 0usize;
+        // SAFETY: a null buffer asks only for the length.
+        let status = unsafe {
+            libc::sysctlbyname(name.as_ptr(), ptr::null_mut(), &mut len, ptr::null_mut(), 0)
+        };
+        if status != 0 || len == 0 {
+            return None;
+        }
+        let mut buffer = vec![0u8; len];
+        // SAFETY: `buffer` has exactly `len` writable bytes.
+        let status = unsafe {
+            libc::sysctlbyname(
+                name.as_ptr(),
+                buffer.as_mut_ptr().cast::<c_void>(),
+                &mut len,
+                ptr::null_mut(),
+                0,
+            )
+        };
+        if status != 0 {
+            return None;
+        }
+        let end = buffer.iter().position(|&b| b == 0).unwrap_or(buffer.len());
+        String::from_utf8(buffer[..end].to_vec()).ok()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
     const STAT: &str = "\
 cpu  100 10 40 800 50 0 0 0 0 0
 cpu0 50 5 20 400 25 0 0 0 0 0
@@ -264,6 +438,7 @@ intr 12345 0 0
 ctxt 987654
 ";
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn parses_aggregate_and_per_core_lines() {
         let sample = parse_stat(STAT);
@@ -285,6 +460,7 @@ ctxt 987654
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn stops_at_the_first_non_cpu_line() {
         let sample = parse_stat("cpu  1 1 1 1 1 0 0 0\nintr 5\ncpu9 9 9 9 9 9 0 0 0\n");
@@ -326,6 +502,7 @@ ctxt 987654
         assert_eq!(after.percent_since(before), 0.0, "hotplug or suspend");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn guest_time_is_not_double_counted() {
         // guest (10) and guest_nice (10) trail the eight fields we consume; they
@@ -334,6 +511,7 @@ ctxt 987654
         assert_eq!(sample.total.total, 1000);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn model_name_drops_vendor_noise() {
         assert_eq!(
@@ -347,11 +525,22 @@ ctxt 987654
     }
 
     #[test]
+    fn shortened_model_names_are_tidy() {
+        assert_eq!(shorten_model("Apple M2 Pro"), "Apple M2 Pro");
+        assert_eq!(
+            shorten_model("Intel(R) Core(TM) i9-9880H CPU @ 2.30GHz"),
+            "Intel i9-9880H"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn model_name_falls_back_when_absent() {
         assert_eq!(parse_model(""), "Unknown CPU");
         assert_eq!(parse_core_count(""), 1, "never report zero cores");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn counts_processor_lines() {
         assert_eq!(
@@ -360,6 +549,7 @@ ctxt 987654
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn missing_files_degrade_to_defaults() {
         let missing = Path::new("/nonexistent-ratatop-test-root");
