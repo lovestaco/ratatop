@@ -11,6 +11,12 @@ ratatui = "0.30"
 # Filesystem usage has no /proc equivalent; statvfs(2) is the only way to get it.
 libc = "0.2"
 
+# macOS battery state comes from IOKit's power-source API, which these bind.
+[target.'cfg(target_os = "macos")'.dependencies]
+mach2 = "0.7.0"
+objc2-core-foundation = "0.3"
+objc2-io-kit = "0.3"
+
 [profile.release]
 lto = true
 strip = true

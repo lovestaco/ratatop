@@ -1,10 +1,16 @@
-//! Memory sampling from `/proc/meminfo`.
+//! Memory sampling: `/proc/meminfo` on Linux, `host_statistics64(3)` and
+//! sysctl on macOS.
 //!
-//! Follows `btop/src/linux/btop_collect.cpp`: `cached` is the raw `Cached` field
-//! (not `Cached + SReclaimable`), and `used` is derived from `MemAvailable`
-//! rather than summed from parts.
+//! Linux follows `btop/src/linux/btop_collect.cpp`: `cached` is the raw `Cached`
+//! field (not `Cached + SReclaimable`), and `used` is derived from
+//! `MemAvailable` rather than summed from parts. macOS follows Activity
+//! Monitor's "Memory Used": app memory, wired, and compressed pages.
 
+#[cfg(target_os = "linux")]
 use std::fs;
+#[cfg(target_os = "linux")]
+use std::path::Path;
+#[cfg(target_os = "macos")]
 use std::path::Path;
 
 /// A memory reading, in bytes.
@@ -33,11 +39,18 @@ pub fn sample() -> Memory {
     sample_in(Path::new("/"))
 }
 
+#[cfg(target_os = "linux")]
 pub(super) fn sample_in(root: &Path) -> Memory {
     let raw = fs::read_to_string(root.join("proc/meminfo")).unwrap_or_default();
     parse(&raw)
 }
 
+#[cfg(target_os = "macos")]
+pub(super) fn sample_in(_root: &Path) -> Memory {
+    macos::sample()
+}
+
+#[cfg(target_os = "linux")]
 fn parse(raw: &str) -> Memory {
     let mut mem = Memory::default();
     let mut available = None;
@@ -82,10 +95,87 @@ fn parse(raw: &str) -> Memory {
     mem
 }
 
+#[cfg(target_os = "macos")]
+mod macos {
+    use std::mem::{size_of, MaybeUninit};
+
+    use super::Memory;
+
+    pub fn sample() -> Memory {
+        let total = crate::collect::cpu::macos::sysctl_u64(c"hw.memsize").unwrap_or(0);
+        // SAFETY: sysconf takes an integer and returns one.
+        let page = match unsafe { libc::sysconf(libc::_SC_PAGESIZE) } {
+            size if size > 0 => size as u64,
+            _ => 4096,
+        };
+
+        let mut mem = Memory {
+            total,
+            swap_total: 0,
+            ..Memory::default()
+        };
+
+        if let Some(stats) = vm_stats() {
+            // Activity Monitor's "Memory Used": app memory (internal pages that
+            // are not purgeable), wired memory, and compressor-held pages.
+            let app = stats
+                .internal_page_count
+                .saturating_sub(stats.purgeable_count);
+            let used_pages =
+                app as u64 + stats.wire_count as u64 + stats.compressor_page_count as u64;
+            mem.used = (used_pages * page).min(total);
+            mem.free = stats.free_count as u64 * page;
+            mem.cached = stats.external_page_count as u64 * page;
+            mem.available = total.saturating_sub(mem.used);
+        }
+
+        if let Some(swap) = swap_usage() {
+            mem.swap_total = swap.xsu_total;
+            mem.swap_used = swap.xsu_used;
+        }
+        mem
+    }
+
+    fn vm_stats() -> Option<libc::vm_statistics64> {
+        let mut stats = MaybeUninit::<libc::vm_statistics64>::zeroed();
+        let mut count = libc::HOST_VM_INFO64_COUNT;
+        // SAFETY: the buffer is a vm_statistics64, and `count` is in
+        // integer_t units, as host_statistics64 expects.
+        let status = unsafe {
+            libc::host_statistics64(
+                mach2::mach_init::mach_host_self(),
+                libc::HOST_VM_INFO64,
+                stats.as_mut_ptr().cast(),
+                &mut count,
+            )
+        };
+        // SAFETY: a successful call fills the structure.
+        (status == libc::KERN_SUCCESS).then(|| unsafe { stats.assume_init() })
+    }
+
+    fn swap_usage() -> Option<libc::xsw_usage> {
+        let mut usage = MaybeUninit::<libc::xsw_usage>::zeroed();
+        let mut len = size_of::<libc::xsw_usage>();
+        // SAFETY: the buffer is an xsw_usage, and `len` is its size.
+        let status = unsafe {
+            libc::sysctlbyname(
+                c"vm.swapusage".as_ptr(),
+                usage.as_mut_ptr().cast(),
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        // SAFETY: a successful call fills the structure.
+        (status == 0).then(|| unsafe { usage.assume_init() })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
     const MEMINFO: &str = "\
 MemTotal:       14177796 kB
 MemFree:          497404 kB
@@ -96,6 +186,7 @@ SwapCached:        81068 kB
 Active:          6141092 kB
 ";
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn parses_the_fields_the_box_shows() {
         let mem = parse(MEMINFO);
@@ -105,6 +196,7 @@ Active:          6141092 kB
         assert_eq!(mem.cached, 5_146_132 * 1024);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn used_is_total_minus_available() {
         let mem = parse(MEMINFO);
@@ -112,6 +204,7 @@ Active:          6141092 kB
         assert_eq!(mem.used + mem.available, mem.total, "the two must sum");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn swap_cached_does_not_get_mistaken_for_cached() {
         // "SwapCached" contains "Cached", so a sloppy match would clobber it.
@@ -119,6 +212,7 @@ Active:          6141092 kB
         assert_eq!(mem.cached, 5_146_132 * 1024);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn falls_back_when_mem_available_is_missing() {
         let mem = parse("MemTotal: 1000 kB\nMemFree: 200 kB\nCached: 300 kB\n");
@@ -126,12 +220,14 @@ Active:          6141092 kB
         assert_eq!(mem.used, 500 * 1024);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn an_impossible_available_does_not_underflow() {
         let mem = parse("MemTotal: 100 kB\nMemFree: 40 kB\nMemAvailable: 900 kB\n");
         assert_eq!(mem.used, 60 * 1024, "falls back to total minus free");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn percent_is_a_share_of_total() {
         let mem = parse(MEMINFO);
@@ -139,10 +235,16 @@ Active:          6141092 kB
         assert_eq!(Memory::default().percent(100), 0.0, "no total known");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn garbage_input_yields_zeroes_not_panics() {
         assert_eq!(parse(""), Memory::default());
         assert_eq!(parse("nonsense\nMemTotal: banana kB\n"), Memory::default());
+    }
+
+    #[test]
+    fn percent_of_an_unknown_total_is_zero() {
+        assert_eq!(Memory::default().percent(100), 0.0, "no total known");
     }
 
     #[test]

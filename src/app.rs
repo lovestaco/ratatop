@@ -1,6 +1,5 @@
 //! Application state: the latest readings plus the history the graphs draw.
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::collect::battery::{self, Battery};
@@ -39,7 +38,7 @@ pub struct App {
     pub net: Net,
     pub processes: Processes,
     pub battery: Option<Battery>,
-    battery_path: Option<PathBuf>,
+    battery_source: Option<battery::Source>,
     previous: Sample,
     pub should_quit: bool,
 }
@@ -47,7 +46,7 @@ pub struct App {
 impl App {
     pub fn new() -> Self {
         let info = CpuInfo::detect();
-        let battery_path = battery::detect();
+        let battery_source = battery::detect();
         // Seed the counters so the first tick reports a real delta instead of
         // uptime-average load.
         let previous = cpu::sample();
@@ -66,8 +65,8 @@ impl App {
             disks: Disks::new(),
             net: Net::new(),
             processes: Processes::new(),
-            battery: battery_path.as_deref().and_then(battery::read),
-            battery_path,
+            battery: battery_source.as_ref().and_then(battery::read),
+            battery_source,
             previous,
             should_quit: false,
         }
@@ -104,7 +103,7 @@ impl App {
         self.disks.tick();
         self.net.tick();
         self.processes.tick();
-        self.battery = self.battery_path.as_deref().and_then(battery::read);
+        self.battery = self.battery_source.as_ref().and_then(battery::read);
     }
 
     /// Step the sample interval, the way btop's `+`/`-` keys do.

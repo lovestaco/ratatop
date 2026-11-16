@@ -14,7 +14,12 @@ manager, but written as a modern Rust TUI.
 
 ## Status
 
-**The CPU box works.** It samples real data and renders btop's layout:
+**macOS and Linux are supported.** CPU, memory, network, disk usage, process,
+load-average, and battery data are sampled from each platform's native APIs.
+CPU frequency and temperature are not currently available on Apple Silicon,
+and macOS disk I/O rates are not reported yet.
+
+The CPU box samples real data and renders btop's layout:
 
 ![ratatop running](media/ratatop.png)
 
@@ -26,9 +31,10 @@ Everything else, the memory, network, and process boxes, is still to come.
  
 ## Design notes
 
-- **Data source:** `/proc` and `/sys` on Linux first, read directly rather than
-  shelling out. btop's `src/linux/btop_collect.cpp` is the reference for what to
-  read and how often; the BSD/macOS collectors are out of scope for v1.
+- **Data source:** Linux reads `/proc` and `/sys` directly. macOS uses Mach,
+  sysctl, libproc, `getifaddrs`, `getmntinfo`, and IOKit's power-source APIs;
+  neither platform shells out to external commands. btop's Linux collector is
+  the reference where its data is available.
 - **Graphs are the hard part.** btop's look comes from braille sub-cell plotting
   with a color gradient applied along the value axis, not from a stock chart
   widget. Expect a custom ratatui widget rather than `Sparkline`/`Chart`.

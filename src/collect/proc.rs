@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::fs;
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
@@ -83,6 +84,7 @@ pub struct Processes {
     previous: HashMap<u32, Ticks>,
     previous_total: u64,
     users: HashMap<u32, String>,
+    #[cfg(target_os = "linux")]
     page_size: u64,
     pub sort: SortBy,
     pub reverse: bool,
@@ -96,6 +98,7 @@ impl Default for Processes {
             previous: HashMap::new(),
             previous_total: 0,
             users: HashMap::new(),
+            #[cfg(target_os = "linux")]
             page_size: page_size(),
             // btop opens sorted by CPU, which is what you almost always want.
             sort: SortBy::Cpu,
@@ -136,29 +139,16 @@ impl Processes {
         let elapsed = total.saturating_sub(self.previous_total);
         self.previous_total = total;
 
-        let proc_dir = root.join("proc");
-        let Ok(entries) = fs::read_dir(&proc_dir) else {
+        let Some(found) = self.scan(root) else {
             self.list.clear();
             return;
         };
 
-        let mut next = Vec::with_capacity(self.list.len().max(64));
-        let mut seen = HashMap::with_capacity(self.list.len().max(64));
+        let mut next = Vec::with_capacity(found.len());
+        let mut seen = HashMap::with_capacity(found.len());
 
-        for entry in entries.flatten() {
-            let Some(pid) = entry
-                .file_name()
-                .to_str()
-                .and_then(|name| name.parse::<u32>().ok())
-            else {
-                continue;
-            };
-            // A process can exit between the readdir and the read, so every
-            // failure here just means "gone" and skips the entry.
-            let Some(mut process) = self.read_process(&entry.path(), pid) else {
-                continue;
-            };
-
+        for mut process in found {
+            let pid = process.pid;
             let busy = process.cpu as u64;
             seen.insert(pid, Ticks { busy });
             process.cpu = self.cpu_percent(pid, busy, elapsed);
@@ -171,8 +161,63 @@ impl Processes {
         self.clamp_selection();
     }
 
+    /// Every process the platform reports, with raw busy ticks in `cpu`.
+    #[cfg(target_os = "linux")]
+    fn scan(&mut self, root: &Path) -> Option<Vec<Process>> {
+        let entries = fs::read_dir(root.join("proc")).ok()?;
+        let mut found = Vec::new();
+        for entry in entries.flatten() {
+            let Some(pid) = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            // A process can exit between the readdir and the read, so every
+            // failure here just means "gone" and skips the entry.
+            if let Some(process) = self.read_process(&entry.path(), pid) {
+                found.push(process);
+            }
+        }
+        Some(found)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn scan(&mut self, _root: &Path) -> Option<Vec<Process>> {
+        let mut found = Vec::new();
+        for pid in macos::pids() {
+            // Processes exit between listing and reading, and some cannot be
+            // read at all; both just skip the entry.
+            let Some(raw) = macos::read(pid) else {
+                continue;
+            };
+            let user = self.user_name(raw.uid);
+            found.push(Process {
+                pid,
+                command: raw.command.unwrap_or_else(|| format!("[{}]", raw.name)),
+                name: raw.name,
+                threads: raw.threads,
+                user,
+                memory: raw.memory,
+                cpu: raw.busy_ticks as f64,
+            });
+        }
+        Some(found)
+    }
+
+    /// Username for a uid, looked up once and then cached.
+    #[cfg(target_os = "macos")]
+    fn user_name(&mut self, uid: u32) -> String {
+        self.users
+            .entry(uid)
+            .or_insert_with(|| macos::user_name(uid).unwrap_or_else(|| "?".to_string()))
+            .clone()
+    }
+
     /// Parse one process, carrying raw busy ticks in `cpu` for the caller to
     /// convert once the total delta is known.
+    #[cfg(target_os = "linux")]
     fn read_process(&self, dir: &Path, pid: u32) -> Option<Process> {
         let stat = fs::read_to_string(dir.join("stat")).ok()?;
         let parsed = parse_stat(&stat)?;
@@ -265,6 +310,7 @@ impl Processes {
     }
 }
 
+#[cfg(target_os = "linux")]
 struct Stat {
     name: String,
     threads: u32,
@@ -278,6 +324,7 @@ struct Stat {
 /// parentheses, so the only safe split is at the *last* `)`. Splitting on
 /// whitespace, or on the first `)`, misreads every field for a process named
 /// something like `foo (bar)`.
+#[cfg(target_os = "linux")]
 fn parse_stat(raw: &str) -> Option<Stat> {
     let open = raw.find('(')?;
     let close = raw.rfind(')')?;
@@ -304,6 +351,7 @@ fn parse_stat(raw: &str) -> Option<Stat> {
 /// The full command line, with NUL separators turned back into spaces.
 ///
 /// Kernel threads have an empty `cmdline`, which is how you tell them apart.
+#[cfg(target_os = "linux")]
 fn read_command(dir: &Path) -> Option<String> {
     let raw = fs::read(dir.join("cmdline")).ok()?;
     if raw.is_empty() {
@@ -320,6 +368,9 @@ fn read_command(dir: &Path) -> Option<String> {
 
 /// uid to username, from `/etc/passwd`.
 ///
+/// On macOS this only seeds the cache: accounts managed by Directory Services
+/// are not in the file, so those are looked up on demand instead.
+///
 /// Read once at startup: it is a file lookup per process otherwise, and the
 /// mapping does not change while a monitor is open.
 fn read_users(root: &Path) -> HashMap<u32, String> {
@@ -334,6 +385,7 @@ fn read_users(root: &Path) -> HashMap<u32, String> {
         .collect()
 }
 
+#[cfg(target_os = "linux")]
 fn page_size() -> u64 {
     // SAFETY: sysconf takes an integer and returns one, touching no memory we
     // own. A negative result means the name is unsupported, which cannot happen
@@ -346,10 +398,176 @@ fn page_size() -> u64 {
     }
 }
 
+/// Process table and per-process stats from libproc and sysctl.
+#[cfg(target_os = "macos")]
+mod macos {
+    use std::ffi::{c_char, c_int, c_void, CStr};
+    use std::mem::{size_of, MaybeUninit};
+    use std::ptr;
+
+    /// `cpu::sample` counts in USER_HZ, which is 100 per second on macOS too.
+    const TICKS_PER_SECOND: u128 = 100;
+    const NANOS_PER_SECOND: u128 = 1_000_000_000;
+
+    pub struct Raw {
+        pub name: String,
+        pub command: Option<String>,
+        pub uid: u32,
+        pub threads: u32,
+        pub memory: u64,
+        pub busy_ticks: u64,
+    }
+
+    /// Every pid the kernel will list.
+    pub fn pids() -> Vec<u32> {
+        // SAFETY: a null buffer asks only for the number of pids.
+        let needed = unsafe { libc::proc_listallpids(ptr::null_mut(), 0) };
+        if needed <= 0 {
+            return Vec::new();
+        }
+        // Leave room for processes started between the two calls.
+        let mut buffer = vec![0 as c_int; needed as usize + 64];
+        let bytes = (buffer.len() * size_of::<c_int>()) as c_int;
+        // SAFETY: the buffer is `bytes` bytes long, as libproc is told.
+        let filled = unsafe { libc::proc_listallpids(buffer.as_mut_ptr().cast(), bytes) };
+        if filled <= 0 {
+            return Vec::new();
+        }
+        buffer.truncate(filled as usize);
+        buffer
+            .into_iter()
+            .filter(|&pid| pid > 0)
+            .map(|pid| pid as u32)
+            .collect()
+    }
+
+    /// One process's stats, or `None` if it exited or belongs to someone we
+    /// may not inspect.
+    pub fn read(pid: u32) -> Option<Raw> {
+        let pid = pid as c_int;
+        let task: libc::proc_taskinfo = info(pid, libc::PROC_PIDTASKINFO)?;
+        let bsd: libc::proc_bsdinfo = info(pid, libc::PROC_PIDTBSDINFO)?;
+
+        // Task times are mach absolute time, not nanoseconds, so convert first.
+        let cpu_nanos = mach_to_nanos(task.pti_total_user.saturating_add(task.pti_total_system));
+        let name = c_string(&bsd.pbi_comm);
+        Some(Raw {
+            command: command(pid),
+            name,
+            uid: bsd.pbi_uid,
+            threads: task.pti_threadnum as u32,
+            memory: task.pti_resident_size,
+            busy_ticks: (cpu_nanos * TICKS_PER_SECOND / NANOS_PER_SECOND) as u64,
+        })
+    }
+
+    fn info<T>(pid: c_int, flavor: c_int) -> Option<T> {
+        let mut value = MaybeUninit::<T>::zeroed();
+        let size = size_of::<T>() as c_int;
+        // SAFETY: the buffer is exactly `size` bytes, which is what the flavor
+        // writes.
+        let written = unsafe {
+            libc::proc_pidinfo(pid, flavor, 0, value.as_mut_ptr().cast::<c_void>(), size)
+        };
+        // SAFETY: a full write initialises the value.
+        (written == size).then(|| unsafe { value.assume_init() })
+    }
+
+    fn mach_to_nanos(ticks: u64) -> u128 {
+        let mut timebase = mach2::mach_time::mach_timebase_info { numer: 0, denom: 0 };
+        // SAFETY: the struct is two u32s, which the call fills in.
+        unsafe { mach2::mach_time::mach_timebase_info(&mut timebase) };
+        if timebase.denom == 0 {
+            return ticks as u128;
+        }
+        ticks as u128 * timebase.numer as u128 / timebase.denom as u128
+    }
+
+    /// The argv of a process, joined with spaces.
+    ///
+    /// `KERN_PROCARGS2` lays the buffer out as: argc (i32), the executable path,
+    /// NUL padding, then argc NUL-terminated arguments.
+    fn command(pid: c_int) -> Option<String> {
+        let mib: [c_int; 3] = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+        let mut len = 0usize;
+        // SAFETY: a null buffer asks only for the size.
+        let status = unsafe {
+            libc::sysctl(
+                mib.as_ptr() as *mut c_int,
+                3,
+                ptr::null_mut(),
+                &mut len,
+                ptr::null_mut(),
+                0,
+            )
+        };
+        if status != 0 || len == 0 {
+            return None;
+        }
+        let mut buffer = vec![0u8; len];
+        // SAFETY: `buffer` has `len` writable bytes.
+        let status = unsafe {
+            libc::sysctl(
+                mib.as_ptr() as *mut c_int,
+                3,
+                buffer.as_mut_ptr().cast::<c_void>(),
+                &mut len,
+                ptr::null_mut(),
+                0,
+            )
+        };
+        if status != 0 {
+            return None;
+        }
+        buffer.truncate(len);
+
+        let argc = i32::from_ne_bytes(buffer.get(..4)?.try_into().ok()?).max(0) as usize;
+        let mut rest = &buffer[4..];
+        // Skip the executable path and the NUL padding after it.
+        let path_end = rest.iter().position(|&b| b == 0)?;
+        rest = &rest[path_end..];
+        while let Some((&0, tail)) = rest.split_first() {
+            rest = tail;
+        }
+
+        let mut args = Vec::with_capacity(argc);
+        for _ in 0..argc {
+            let end = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
+            args.push(String::from_utf8_lossy(&rest[..end]).into_owned());
+            rest = rest.get(end + 1..).unwrap_or(&[]);
+        }
+        let text = args.join(" ");
+        (!text.is_empty()).then_some(text)
+    }
+
+    /// Username from the directory service, which covers accounts that are not
+    /// in `/etc/passwd`.
+    pub fn user_name(uid: u32) -> Option<String> {
+        // SAFETY: getpwuid returns a pointer into libc-owned storage, or null.
+        let entry = unsafe { libc::getpwuid(uid) };
+        if entry.is_null() {
+            return None;
+        }
+        // SAFETY: a non-null entry has a NUL-terminated pw_name.
+        let name = unsafe { CStr::from_ptr((*entry).pw_name) };
+        Some(name.to_string_lossy().into_owned())
+    }
+
+    fn c_string(raw: &[c_char]) -> String {
+        let bytes: Vec<u8> = raw
+            .iter()
+            .take_while(|&&c| c != 0)
+            .map(|&c| c as u8)
+            .collect();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn parses_a_normal_stat_line() {
         let raw = "125045 (cat) R 125025 125045 125025 0 -1 4194304 92 0 0 0 \
@@ -361,6 +579,7 @@ mod tests {
         assert_eq!(stat.rss_pages, 480);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn comm_may_contain_spaces_and_parentheses() {
         // This is the classic /proc/pid/stat trap. Splitting on whitespace or on
@@ -374,6 +593,7 @@ mod tests {
         assert_eq!(stat.rss_pages, 64);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn malformed_stat_lines_are_rejected_not_panicked_on() {
         assert!(parse_stat("").is_none());
@@ -384,6 +604,7 @@ mod tests {
         assert_eq!(stat.busy_ticks, 0);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn cmdline_nuls_become_spaces() {
         let dir = tempdir();
@@ -391,6 +612,7 @@ mod tests {
         assert_eq!(read_command(&dir).as_deref(), Some("/bin/ls -la /tmp"));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn empty_cmdline_means_kernel_thread() {
         let dir = tempdir();
@@ -530,6 +752,7 @@ mod tests {
         assert!((0.0..=100.0).contains(&us.cpu));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn kernel_threads_get_a_bracketed_command() {
         let processes = Processes::new();
@@ -543,6 +766,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_missing_proc_yields_an_empty_list() {
         let mut processes = Processes::default();

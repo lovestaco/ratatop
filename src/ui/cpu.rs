@@ -376,11 +376,12 @@ mod tests {
         }
         let rendered = text(&draw(&app, 70, 9));
         let rows: Vec<&str> = rendered.lines().collect();
-        // With four rows of cores, C0 and C4 head the two columns on one line.
+        // The first core in the second column follows the first column's share.
+        let second_column = app.core_count().div_ceil(2);
         let first_core_row = rows.iter().find(|row| row.contains("C0")).expect("C0 row");
         assert!(
-            first_core_row.contains("C4"),
-            "expected C0 and C4 side by side, got {first_core_row:?}"
+            first_core_row.contains(&format!("C{second_column}")),
+            "expected C0 and C{second_column} side by side, got {first_core_row:?}"
         );
         assert!(
             !first_core_row.contains("C1"),
